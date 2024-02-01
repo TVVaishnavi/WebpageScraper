@@ -1,37 +1,49 @@
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.common import NoSuchElementException
+from webdriver_manager.chrome import ChromeDriverManager
 import time
 
 
 def scrapeData(driver, url):
     driver.get(url)
-    questions = driver.find_elements(By.CLASS_NAME, "clearfix")
+    container = driver.find_element(By.ID, "page-container")
+    questions = container.find_elements(By.CLASS_NAME, "clearfix")
 
     for quest in questions:
-        quest = quest
-        quest = quest.find_element(By.CLASS_NAME, "perseus-renderer")
-        item1 = quest.find_element(By.XPATH, '//div[@data-perseus-paragraph-index="0"]')
-        item2 = quest.find_element(By.XPATH, '//div[@data-perseus-paragraph-index="1"]')
-        item3 = quest.find_element(By.XPATH, '//div[@data-perseus-paragraph-index="2"]')
+        quest = quest.find_element(By.XPATH, "*")
+        items = quest.find_elements(By.XPATH, "*")
 
-        title = scrapeQuestionTitle(item1)
-        choices = scrapeQuestionDetails(item2)
-        print("%%" + "*" * 20 + "%%")
-        print(quest.find_element(By.XPATH, '//div[@data-perseus-paragraph-index="0"]').find_element(By.TAG_NAME,
-                                                                                                    "h4").text)
-        # print(title)
-        # print(choices)
-        print("%%" + "*" * 20 + "%%\n")
+        title = scrapeQuestionTitle(items[0])
+        print(title)
+        # choices = scrapeQuestionDetails(items[1])
+        solution = scrapeSolution(items[2])
+
+        # print(solution)
 
 
 def scrapeQuestionTitle(parentTag: WebElement):
     h4 = parentTag.find_element(By.TAG_NAME, "h4")
-    text = h4.text.split(" | ")
+    text = h4.get_attribute("innerHTML").split(" | ")
     return text
+
+
+def scrapeSolution(parentTag: WebElement):
+    aTag = parentTag.find_element(By.TAG_NAME, "a")
+    aTag.click()
+    solutionDivTag = parentTag.find_element(By.CLASS_NAME, "_1bm00l4r")
+    res = []
+    try:
+        res.append(solutionDivTag.find_element(By.TAG_NAME, "strong").text)
+    except:
+        sols = solutionDivTag.find_elements(By.TAG_NAME, "mjx-assistive-mml")
+
+        for mjx_mml in sols:
+            res.append(__scrape_mjx_assistive_mml(mjx_mml))
+
+    return res
 
 
 def scrapeQuestionDetails(parentTag: WebElement):
@@ -69,8 +81,14 @@ def scrapeQuestionDetails(parentTag: WebElement):
     return res
 
 
-def scrapeSolution():
-    ...
+def __scrape_mjx_assistive_mml(tag: WebElement):
+    try:
+        frac = tag.find_element(By.TAG_NAME, "mfrac")
+        mns = frac.find_elements(By.TAG_NAME, "mn")
+        return f"{mns[0].get_attribute('innerHTML')}/{mns[1].get_attribute('innerHTML')}"
+    except:
+        mn = tag.find_element(By.TAG_NAME, "mn")
+        return mn.get_attribute("innerHTML")
 
 
 def scrapeChoices(tag: WebElement):
@@ -96,16 +114,10 @@ def scrapeText(tag: WebElement):
 
 if __name__ == '__main__':
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
-    url = ("https://www.khanacademy.org/test-prep/dpsat-practice-test-01-12/xf042e2c5bc6f4af4:dpsat-practice-test-01-12"
-           "/xf042e2c5bc6f4af4:psat-test-sections/a/dpsat--pt1--math--m0")
+    # driver.set_window_size(640, 320)
+    url = ("https://www.khanacademy.org/test-prep/dpsat-practice-test-01-12/xf042e2c5bc6f4af4:dpsat-practice-test-01"
+           "-12/xf042e2c5bc6f4af4:psat-test-sections/a/dpsat--pt1--math--m0")
 
-    # scrapeData(driver, url)
-    driver.get(url)
-    e = driver.find_element(By.XPATH,
-                            "/html/body/div/div[3]/div/div[2]/div/div/main/div[2]/div/div/div[1]/div/div/div/div[2]/div/div[1]/div/div[2]/div/div/div/div/div[2]/div")
-    print(e.text)
-    path = '/html/body/div/div[3]/div/div[2]/div/div/main/div[2]/div/div/div[1]/div/div/div/div[2]/div/div[1]/div/div[2]/div/div/div/div/div[3]/div/div/div/fieldset/ul/li[1]/div/div/button/div/span/div[2]/div/div/div/div/span/span/mjx-container/mjx-assistive-mml/math'
-    f = driver.find_element(By.XPATH, path)
-    print("%%%% " + f.text + " ****")
-    # time.sleep(10)
+    scrapeData(driver, url)
+    time.sleep(30)
     driver.quit()
