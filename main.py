@@ -10,32 +10,36 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from bs4.element import NavigableString
 
+import openpyxl
 import time
 
 
 def scrapeData(driver, url):
+    # print(driver, url)
     driver.get(url)
-    container = driver.find_element(By.ID, "page-container")
+    time.sleep(5)
+    container = driver.find_element(By.CLASS_NAME, "_1h1mqh3")
     questions = container.find_elements(By.CLASS_NAME, "clearfix")
 
     res = []
-
+    print(container)
+    print(questions)
     for quest in questions:
-        data = dict()
+        data = []
 
         quest = quest.find_element(By.XPATH, "*")
         items = quest.find_elements(By.XPATH, "*")
 
         title = scrapeQuestionTitle(items[0])
-        data['title'] = title
+        data.append(title)
 
-        details = scrapeQuestionDetails(items[1])
-        data['details'] = details
+        q_and_a = scrapeQuestionDetails(items[1])
+        # print(q_and_a)
+        data.extend(q_and_a)
 
         solution = scrapeSolution(items[2])
-        data['solution'] = solution
+        data.append(solution)
 
-        [print(key, data[key]) for key in data]
         res.append(data)
 
     return res
@@ -44,7 +48,7 @@ def scrapeData(driver, url):
 def scrapeQuestionTitle(parentTag: WebElement):
     h4 = parentTag.find_element(By.TAG_NAME, "h4")
     text = h4.get_attribute("innerHTML").split(" | ")
-    return text
+    return text[1]
 
 
 def scrapeSolution(parentTag: WebElement):
@@ -53,14 +57,14 @@ def scrapeSolution(parentTag: WebElement):
     solutionDivTag = parentTag.find_element(By.CLASS_NAME, "_1bm00l4r")
     res = []
     try:
-        res.append(solutionDivTag.find_element(By.TAG_NAME, "strong").text)
+        res.append(solutionDivTag.find_element(By.TAG_NAME, "strong").get_attribute("innerHTML"))
     except:
         sols = solutionDivTag.find_elements(By.TAG_NAME, "mjx-assistive-mml")
 
         for mjx_mml in sols:
             res.append(__scrape_mjx_assistive_mml(mjx_mml))
 
-    return res
+    return ", ".join(res)
 
 
 def scrapeQuestionDetails(parentTag: WebElement):
@@ -70,11 +74,17 @@ def scrapeQuestionDetails(parentTag: WebElement):
 
     # exp = __scrapeExplanation(parentTag)
     options = __scrapeOptions(paragraphs[-1])
+    if len(options) != 4:
+        options = [""] * 4
+
     prompt = {"figure": [], "text": []}
     for para in paragraphs[:-1]:
 
         div = para.find_element(By.XPATH, "*")
-        if "perseus-block-math" in div.get_attribute("class").strip():
+        if div.tag_name == 'table':
+            prompt['text'].append(__parseTable(div))
+
+        elif "perseus-block-math" in div.get_attribute("class").strip():
             mjx_mml = div.find_element(By.TAG_NAME, "mjx-assistive-mml")
             prompt['text'].append(__scrape_mjx_assistive_mml(mjx_mml))
 
@@ -86,11 +96,13 @@ def scrapeQuestionDetails(parentTag: WebElement):
             except:
                 prompt['text'].append(__parseParagraph(div))
 
-    details = dict()
-    details['prompt'] = prompt
-    details['options'] = options
-
-    return details
+    # details = dict()
+    # details['prompt'] = prompt
+    # details['options'] = options
+    res = []
+    res.append("\n".join(prompt['text']).strip())
+    res.extend(options)
+    return res
 
 
 def __scrapeOptions(parentTag: WebElement):
@@ -100,11 +112,15 @@ def __scrapeOptions(parentTag: WebElement):
         for li in items:
             div = li.find_element(By.TAG_NAME, "button").find_element(By.CLASS_NAME, "perseus-renderer")
             try:
-                block_math = div.find_element(By.CLASS_NAME, "perseus-block-math")
-                option = __parseMathBlock(block_math)
+                table = div.find_element(By.TAG_NAME, "table")
+                option = __parseTable(table)
             except:
-                para = div.find_element(By.CLASS_NAME, "paragraph").find_element(By.CLASS_NAME, "paragraph")
-                option = __parseParagraph(para)
+                try:
+                    block_math = div.find_element(By.CLASS_NAME, "perseus-block-math")
+                    option = __parseMathBlock(block_math)
+                except:
+                    para = div.find_element(By.CLASS_NAME, "paragraph").find_element(By.CLASS_NAME, "paragraph")
+                    option = __parseParagraph(para)
 
             res.append(option)
 
@@ -141,13 +157,29 @@ def __parseMathBlock(tag: WebElement):
 def __parseParagraph(tag: WebElement):
     content = tag.get_attribute("innerHTML")
     soup = BeautifulSoup(content, "html.parser")
+    children = tag.find_elements(By.XPATH, "*")
+    count = 0
     res = ""
     for c in soup.children:
+        # I wonder whether I have to call mjx-assistive-mml func to span tags?
         if isinstance(c, Tag):
-            for ch in c.text:
-                if ch.isascii():
-                    res += ch
+            if c.name == 'span':
+                html_content = str(c.getText)
+                # print(str(c.getText))
+                elem = children[count].find_element(By.TAG_NAME, "mjx-assistive-mml")
+                res += __scrape_mjx_assistive_mml(elem)
+            elif c.name == 'br':
+                res += "\n"
+            else:
+                for ch in c.text:
+                    if ch.isascii():
+                        res += ch
+
+            count += 1
+
         elif isinstance(c, NavigableString):
+            if c.isspace():
+                continue
             for ch in c:
                 if ch.isascii():
                     res += ch
@@ -159,23 +191,35 @@ def __parseParagraph(tag: WebElement):
 
 def parseMSUP(tag: WebElement):
     sub_elem = tag.find_elements(By.XPATH, "*")
-    vals = [val.get_attribute("innerHTML") for val in sub_elem]
-    return "^".join(vals)
+    vals = []
+    for val in sub_elem:
+        if val.tag_name == 'mrow':
+            for e in val.find_elements(By.XPATH, "*"):
+                if e.tag_name == 'mstyle':
+                    vals.append(parseMSTYLE(e))
+                else:
+                    vals.append(e.get_attribute("innerHTML"))
+        else:
+            vals.append(val.get_attribute("innerHTML"))
+    return "".join(vals[:-1]) + "^" + vals[-1]
 
 
 def parseMSTYLE(tag: WebElement):
-    fraction_components = tag.find_element(By.TAG_NAME, "mfrac").find_elements(By.XPATH, "*")
-    vals = []
-    for comp in fraction_components:
-        if comp.tag_name == 'mrow':
-            val = ""
-            for term in comp.find_elements(By.XPATH, "*"):
-                val += term.get_attribute("innerHTML")
-            vals.append("(" + val + ")")
-        else:
-            vals.append(comp.get_attribute("innerHTML"))
+    try:
+        fraction_components = tag.find_element(By.TAG_NAME, "mfrac").find_elements(By.XPATH, "*")
+        vals = []
+        for comp in fraction_components:
+            if comp.tag_name == 'mrow':
+                val = ""
+                for term in comp.find_elements(By.XPATH, "*"):
+                    val += term.get_attribute("innerHTML")
+                vals.append("(" + val + ")")
+            else:
+                vals.append(comp.get_attribute("innerHTML"))
 
-    return "/".join(vals)
+        return "/".join(vals)
+    except:
+        return tag.text
 
 
 def parseMTABLE(tag: WebElement):
@@ -191,14 +235,37 @@ def parseMTABLE(tag: WebElement):
                 elif e.tag_name == 'mstyle':
                     res += parseMSTYLE(e)
 
-                elif e.tag_name == 'mtable':
+                elif e.tag_name == 'mtable':  # WTF is this?
                     res += parseMTABLE(e)
 
                 else:
                     res += e.get_attribute("innerHTML")
-        res += row + "\n"
+        # trouble over here
+        if not row.isspace():
+            res += row + "\n"
 
     return res
+
+
+def __parseTable(tag: WebElement):
+    res = ""
+    thead = tag.find_element(By.TAG_NAME, "thead")
+    tbody = tag.find_element(By.TAG_NAME, "tbody")
+    for th in thead.find_elements(By.TAG_NAME, "th"):
+        res += th.get_attribute('innerHTML') + ", "
+
+    res += '\n'
+
+    for tr in tbody.find_elements(By.TAG_NAME, "tr"):
+        for td in tr.find_elements(By.TAG_NAME, "td"):
+            try:
+                mjx_mml = td.find_element(By.TAG_NAME, "mjx-assistive-mml")
+                res += __scrape_mjx_assistive_mml(mjx_mml) + ", "
+            except:
+                res += td.text + ", "
+        res += '\n'
+
+    return res.strip()
 
 
 def __scrape_mjx_assistive_mml(tag: WebElement):
@@ -214,6 +281,20 @@ def __scrape_mjx_assistive_mml(tag: WebElement):
         elif e.tag_name == 'mtable':
             res += parseMTABLE(e)
 
+        elif e.tag_name == 'mover':
+            for elem in e.find_element(By.XPATH, "*").find_elements(By.XPATH, "*"):
+                res += elem.get_attribute("innerHTML")
+
+        elif e.tag_name == 'mrow':
+            for ch in e.find_elements(By.XPATH, "*"):
+                if ch.tag_name == 'mstyle':
+                    res += parseMSTYLE(ch)
+                else:
+                    res += ch.get_attribute("innerHTML")
+
+        elif e.tag_name == 'msqrt':
+            res += "√" + e.find_element(By.XPATH, "*").get_attribute("innerHTML")
+
         else:
             res += e.get_attribute("innerHTML")
 
@@ -227,16 +308,63 @@ def __scrapeFigure(tag: WebElement):
     return [img_link, alt_text]
 
 
-def scrapeText(tag: WebElement):
-    text = tag.text
-    return text
+def writeData(file_path, data, test_name, module_name):
+    wb = openpyxl.load_workbook(file_path)
+    sheet = wb.active
+
+    for row in data:
+        sheet.append([test_name, module_name] + row)
+
+    sheet.append([""] * 9)
+    wb.save(file_path)
+
+
+def scrapeAndWrite(path, links):
+    t = links[0].split("/")[-2].split("-")
+    test_name = t[0].upper() + t[2].split("-")[0]
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+
+    driver.get(links[0])
+    link_to_test_home = driver.find_element(By.CLASS_NAME, "_dwmetq").get_attribute("href")
+    driver.get(link_to_test_home)
+    items = driver.find_element(By.CLASS_NAME, "_37mhyh").find_elements(By.XPATH, "*")[3:]
+    urls = []
+    for i in range(len(items)):
+        urls.append(items[i].find_element(By.TAG_NAME, 'a').get_attribute("href"))
+
+    driver.get(links[1])
+    link_to_test_home = driver.find_element(By.CLASS_NAME, "_dwmetq").get_attribute("href")
+
+    driver.get(link_to_test_home)
+    item = driver.find_element(By.CLASS_NAME, "_37mhyh").find_elements(By.XPATH, "*")[-1]
+    urls.append(item.find_element(By.TAG_NAME, 'a').get_attribute("href"))
+    [print(url) for url in urls]
+
+    for i in range(len(urls)):
+        data = scrapeData(driver, urls[i])
+        print("$" * 50)
+        print(data)
+        print("&" * 50)
+        writeData(file_path, data, test_name, f"M{i + 1}")
+
+    driver.quit()
 
 
 if __name__ == '__main__':
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
     # driver.set_window_size(640, 320)
-    url = ("https://www.khanacademy.org/test-prep/dpsat-practice-test-01-12/xf042e2c5bc6f4af4:dpsat-practice-test-01"
-           "-12/xf042e2c5bc6f4af4:psat-test-sections/a/dpsat--pt1--math--m0")
+    file_path = "output/Khan_academy.xlsx"
+    links = [
+        # ("https://www.khanacademy.org/test-prep/dsat--practice-test--01-11/",
+        #  "https://www.khanacademy.org/test-prep/dsat--practice-test--01-12/"),
+        # ("https://www.khanacademy.org/test-prep/dsat--practice-test--02-11/",
+        #  "https://www.khanacademy.org/test-prep/dsat--practice-test--02-12/"),
+        # ("https://www.khanacademy.org/test-prep/dsat--practice-test--03-11/",
+        #  "https://www.khanacademy.org/test-prep/dsat--practice-test--03-12/"),
+        # ("https://www.khanacademy.org/test-prep/dsat--practice-test--04-11/",
+        #  "https://www.khanacademy.org/test-prep/dsat--practice-test--04-12/"),
+        ("https://www.khanacademy.org/test-prep/dpsat-practice-test-01-11/",
+         "https://www.khanacademy.org/test-prep/dpsat-practice-test-01-12/")
+    ]
 
-    data = scrapeData(driver, url)
-    driver.quit()
+    for link_pair in links:
+        scrapeAndWrite(file_path, link_pair)
