@@ -10,4 +10,4 @@ An application to scrape contents from the required url.
    * git branch test
    * git checkout test 
    
-3.In pycharm open the file 
+ 
